@@ -2,6 +2,162 @@ library(expm)
 library(rgl)
 library(RcppEigen)
 
+sphere_diff_core = function (x, y) {
+  u1 = x
+  u2 = y - c(t(c(y) %*% c(u1))) * u1
+  u2 = u2 / sqrt(sum(u2^2))
+  
+  Q = outer(u1, u2) - outer(u2, u1)
+  theta = acos(c(c(x) %*% c(y)))
+  R = expm(theta * Q) # diag(1, length(x)) + sin(theta) * Q + (1 - cos(theta)) * (Q %*% Q)
+  
+  return (list("Q" = Q, "R" = R, "theta" = theta))
+}
+
+#' evaluates the position of the spherical polynomial trend at time t
+#' 
+#' @param t a time index or a grid of time index
+#' @param Q an n by n by d array, where each n by n slice is a skew-symmetric matrix
+#'          corresponding to the coefficients associated from the lower degree to the 
+#'          highest degree
+#' @param x starting point
+#' 
+sphere_trend = function (t, Q, x) {
+  if (is.matrix(Q)) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) == 2) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) != 3) {
+    stop("Q must be either an n by n matrix or an n by n by d array")
+  }
+  
+  n = dim(Q)[1]
+  d = dim(Q)[3]
+  
+  if (length(t) == 1) {
+    r = 1
+    
+    time_poly = c(t^c(1:d))
+    M = matrix(Q, n * n, d) %*% time_poly
+    M = array(M, dim = c(n, n, 1))
+  } else {
+    r = length(t)
+    
+    time_poly = t(outer(t, 1:d, `^`))
+    M = matrix(Q, n * n, d) %*% time_poly
+    M = array(M, dim = c(n, n, r))
+  }
+  
+  R = array(0, dim = dim(M))
+  res = array(NA, dim = c(n, r))
+  for (j in 1:r) {
+    R[,,j] = expm(M[,,j])
+    res[,j] = R[,,j] %*% x
+  }
+  
+
+  return (t(res))
+}
+
+#' adds noise to sphere data
+#' 
+#' @param x a d-dimensional vector or n by d array of data
+#' @param type noise distribution ("truncate_normal")
+#' @param L norm of the truncated normal
+#' 
+noise_inject = function (x, type = "truncate_normal", L = NULL) {
+  if (type == "truncate_normal") {
+    if (is.vector(x)) {
+      d = length(x)
+      
+    } else if (is.matrix(x)) {
+      n = nrow(x)
+      d = ncol(x)
+    }
+    
+    res = matrix(0, nrow = n )
+    
+  } else {
+    stop("noise_inject: noise type not supported")
+  }
+}
+
+#' add longitude and latitude grids to rgl sphere object
+#' 
+#' @param n_lat number of latitude lines
+#' @param n_lon number of longitude lines
+#' @param alpha degree of transparency
+#'  
+add_sphere_grid = function (n_lat = 9, n_lon = 18, col = "black", alpha = 0.3) {
+  phi = seq(-pi / 2, pi / 2, length.out = n_lat)
+  theta = seq(0, 2 * pi, length.out = n_lon)
+  
+  for (lat in phi) {
+    x = cos(lat) * cos(theta)
+    y = cos(lat) * sin(theta)
+    z = sin(lat) * rep(1, n_lon)
+    lines3d(x, y, z, col = col, alpha = alpha)
+  }
+  
+  for (lon in theta) {
+    x = cos(phi) * cos(lon)
+    y = cos(phi) * sin(lon)
+    z = sin(phi)
+    lines3d(x, y, z, col = col, alpha = alpha)
+  }
+}
+
+
+
+
+
+
+
+
+### Example drawing
+# x = c(0, 0, 1)
+# k = 500  # number of time points
+# c = pi   # maximum time
+# 
+# Q1 = matrix(c(0, 0, 1, 0, 0, 0, -1, 0, 0), ncol = 3)
+# res = sphere_trend(c(0:(c * k)) / k, Q1, x)
+# 
+# spheres3d(0, 0, 0, radius = 1, color = "gray", alpha = 0.6)
+# points3d(head(res, 1), col = "lightblue", size = 10)
+# points3d(tail(res, 1), col = "salmon", size = 10)
+# cols = colorRampPalette(c("lightblue", "salmon"))(c * k + 1)
+# points3d(res, col = cols, size = 5)
+# 
+# Q2 = matrix(c(0, 0, 0, 0, 0, 1, 0, -1, 0), ncol = 3)
+# res = sphere_trend(c(0:(c * k)) / k, Q2, x)
+# points3d(head(res, 1), col = "lightblue", size = 10)
+# points3d(tail(res, 1), col = "darkgreen", size = 10)
+# cols = colorRampPalette(c("lightblue", "darkgreen"))(c * k + 1)
+# points3d(res, col = cols, size = 5)
+# 
+# res = sphere_trend(c(0:(c * k)) / k, array(c(Q1, Q2), dim = c(3, 3, 2)), x)
+# points3d(head(res, 1), col = "lightblue", size = 10)
+# points3d(tail(res, 1), col = "gold", size = 10)
+# cols <- colorRampPalette(c("lightblue", "gold"))(c * k + 1)
+# points3d(res, col = cols, size = 5)
+# 
+# add_sphere_grid(alpha = 0.8)
+# close3d()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #' create basis for the set of skew-symmetric matrices in R^d
 #' 
 SK_basis = function (d) {
@@ -42,6 +198,11 @@ check_type = function(x) {
 
 SK_to_coordinate <- function(R) {
   # R: d × d × n
+  
+  if (length(dim(R)) == 2) {
+    R = array(R, dim = c(dim(R), 1))
+  }
+  
   d = dim(R)[1]
   n = dim(R)[3]
   
@@ -55,9 +216,9 @@ SK_to_coordinate <- function(R) {
   
   # Result: (n × k)
   # Crossprod trick: (B' R) but R is d^2 × n, B is d^2 × k
-  res = crossprod(B_mat, R_mat)   # k × n
+  res = t(R_mat) %*% B_mat / 2   # k × n
   
-  return (t(res))
+  return (res)
 }
 
 #' fast linear regression with multivariate Y
@@ -139,7 +300,7 @@ SPD_gen = function (n, d, B, sigma = 0.1, type = 1) {
     
     for (i in 1:n) {
       for (j in 1:p) {
-        res[i,] = res[i,] + B[,j] * ((i + 1) / n)^(j - 1)
+        res[i,] = res[i,] + B[,j] * (i / n)^(j - 1)
       }
       res[i,] = res[i,] + stationary_components[i,]
     }
@@ -185,7 +346,7 @@ SPT_gen = function (n, d, B, x0, sigma = 0.1, type = 1) {
     }
   }
   
-  return (list("x" = x, "basis" = basis, "R" = R, "Q" = Q, "x0" = x0))
+  return (list("x" = x, "basis" = basis, "SPD" = SPD, "R" = R, "Q" = Q, "x0" = x0))
 }
 
 #' estimates the SPT model
