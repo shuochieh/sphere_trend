@@ -17,7 +17,7 @@ sphere_diff_core = function (x, y) {
 #' evaluates the position of the spherical polynomial trend at time t
 #' 
 #' @param t a time index or a grid of time index
-#' @param Q an n by n by d array, where each n by n slice is a skew-symmetric matrix
+#' @param Q an d by d by p array, where each d by d slice is a skew-symmetric matrix
 #'          corresponding to the coefficients associated from the lower degree to the 
 #'          highest degree
 #' @param x starting point
@@ -28,23 +28,23 @@ sphere_trend = function (t, Q, x) {
   } else if (length(dim(Q)) == 2) {
     Q = array(Q, dim = c(dim(Q), 1))
   } else if (length(dim(Q)) != 3) {
-    stop("Q must be either an n by n matrix or an n by n by d array")
+    stop("Q must be either an d by d matrix or an d by d by p array")
   }
   
   n = dim(Q)[1]
-  d = dim(Q)[3]
+  p = dim(Q)[3]
   
   if (length(t) == 1) {
-    r = 1
+    r = 1  # length of output
     
-    time_poly = c(t^c(1:d))
-    M = matrix(Q, n * n, d) %*% time_poly
+    time_poly = c(t^c(0:(p - 1)))
+    M = matrix(Q, n * n, p) %*% time_poly
     M = array(M, dim = c(n, n, 1))
   } else {
     r = length(t)
     
-    time_poly = t(outer(t, 1:d, `^`))
-    M = matrix(Q, n * n, d) %*% time_poly
+    time_poly = t(outer(t, 0:(p - 1), `^`))
+    M = matrix(Q, n * n, p) %*% time_poly
     M = array(M, dim = c(n, n, r))
   }
   
@@ -54,9 +54,125 @@ sphere_trend = function (t, Q, x) {
     R[,,j] = expm(M[,,j])
     res[,j] = R[,,j] %*% x
   }
-  
 
   return (t(res))
+}
+
+#' computes the exponential map of the sphere
+#' 
+#' @param x an (n by d) array or a vector on the tangent space
+#' @param mu the reference point
+#' 
+Exp_sphere = function (x, mu) {
+  # x: an (m by d) matrix or a vector on the tangent space
+  # mu: an d-dimensional vector of the reference point
+  # tangent space --> sphere
+  
+  if (is.matrix(x)) {
+    
+    if (sum(abs(x)) == 0) {
+      return (matrix(mu, nrow = nrow(x), ncol = ncol(x), byrow = T))
+    }
+    
+    x_norm = sqrt(rowSums(x^2))
+    x_norm[which(x_norm == 0)] = 1
+    std_x = x / x_norm
+    res = outer(cos(x_norm), mu) + sin(x_norm) * std_x
+    
+    res = res / sqrt(rowSums(res^2)) # normalize again to avoid numerical instability
+  } else {
+    
+    if (sum(abs(x)) == 0) {
+      return (mu)
+    }
+    
+    x_norm = sqrt(sum(x^2))
+    res = cos(x_norm) * mu + sin(x_norm) * x / x_norm
+    
+    res = res / sqrt(sum(res^2))
+  }
+  
+  return (res)
+}
+
+#' computes the logarithm map of the sphere 
+#' 
+#' @param x an (n by d) array or a vector on the sphere
+#' @param mu the reference point
+#' 
+Log_sphere = function (x, mu) {
+  # x: an (m by d) matrix or a vector on the sphere
+  # mu: an d-dimensional vector of the reference point
+  # sphere --> tangent space
+  
+  if (is.matrix(x)) {
+    w = x - matrix(mu, nrow = nrow(x), ncol = ncol(x), byrow = T)
+    Proj = w - outer(c(w %*% mu), mu)
+    Proj = Proj / sqrt(rowSums(Proj^2))
+    
+    res = acos(c(x %*% mu)) * Proj
+    
+    if (any(rowSums(abs(w)) < 1e-7)) {
+      res[which(rowSums(abs(w)) < 1e-7),] = 0
+    }
+    
+    
+  } else {
+    w = x - mu
+    Proj = w - mu * c(t(mu) %*% w)
+    
+    if (sum(abs(w)) < 1e-7) {
+      res = rep(0, length(mu))
+    } else {
+      res = acos(c(x %*% mu)) * Proj / sqrt(sum(Proj^2))
+    }
+  }
+  
+  return (res)
+}
+
+#' samples truncated normal distribution
+t_isonormal_sampler = function (n, p, norm_cut = Inf, sd = 1) {
+  counter = 0
+  res = array(NA, dim = c(n, p))
+  while (counter < n) {
+    n_sampler = n * 10
+    draw = matrix(rnorm(n_sampler * p, sd = sd), nrow = n_sampler, ncol = p)
+    idx_effective = which(sqrt(rowSums(draw^2)) < norm_cut)
+    n_eff = length(idx_effective)
+    if (n_eff == 0) {
+      next
+    }
+    if (counter + n_eff < n) {
+      res[(counter + 1):(counter + n_eff),] = draw[idx_effective,]
+      counter = counter + n_eff
+    } else {
+      res[(counter + 1):n,] = draw[idx_effective[1:(n - counter)],]
+      counter = counter + n_eff
+    }
+  }
+  
+  if (p > 1) {
+    return (res)
+  } else {
+    return (c(res))
+  } 
+}
+
+#' samples truncated normal distribution on the tangent space
+#' 
+#' @param n number of samples
+#' @param L magnitude of truncation of the norm
+#' @param mu reference point
+#' 
+trunc_normal_tangent = function (n, L, mu) {
+  d = length(mu)
+  bas = svd(mu, nu = d)$u[,-1]
+  
+  temp = t_isonormal_sampler(n, d - 1, norm_cut = L, sd = 1)
+  res = bas %*% t(temp)
+  
+  return (res)
 }
 
 #' adds noise to sphere data
@@ -67,20 +183,92 @@ sphere_trend = function (t, Q, x) {
 #' 
 noise_inject = function (x, type = "truncate_normal", L = NULL) {
   if (type == "truncate_normal") {
+    if (is.null(L)) {
+      stop("noise_inject: for truncate_normal type, L must be supplied")
+    }
     if (is.vector(x)) {
       d = length(x)
       
+      res = Exp_sphere(trunc_normal_tangent(1, L = L, mu = x) , mu = x)
     } else if (is.matrix(x)) {
       n = nrow(x)
       d = ncol(x)
+      
+      res = matrix(0, nrow = n, ncol = d)
+      
+      for (i in 1:n) {
+        res[i,] = Exp_sphere(c(trunc_normal_tangent(1, L = L, mu = x[i,])) , mu = x[i,])
+      }
     }
-    
-    res = matrix(0, nrow = n )
-    
   } else {
     stop("noise_inject: noise type not supported")
   }
+  
+  return (res)
 }
+
+#' computes the gradient with respect to the skew-symmetric coefficients and the reference point
+#' 
+#' @param U tangent vectors on the spheres (n by d array or vector)
+#' @param Q current polynomial coefficient estimate (d by d by p array or matrix)
+#' @param x current reference point estimate
+#' @param time specific time points associated with U (default is equally spaced grids)
+#' 
+skew_gradient = function (U, Q, x, time = NULL) {
+  if (is.matrix(Q)) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) == 2) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) != 3) {
+    stop("skew_gradient: Q must be either an d by d matrix or an d by d by p array")
+  }
+  
+  if (is.matrix(U)) {
+    n = nrow(U)
+  } else if (is.vector(U)) {
+    n = 1
+  } else {
+    stop("skew_gradient: U must be a matrix or a vector")
+  }
+  
+  d = dim(Q)[1]
+  p = dim(Q)[3]
+  if (is.null(time)) {
+    time = c(1:n) / n
+  } else {
+    if (length(time) != n) {
+      stop("skew_gradient: time length must equal the first dimension of U")
+    }
+  }
+
+  if (n == 1) {
+    time_poly = time^(0:(p - 1))
+    M = matrix(Q, d * d, p) %*% time_poly
+    M = array(M, dim = c(d, d, 1))
+  } else {
+    time_poly = t(outer(time, 0:(p - 1), `^`))
+    M = matrix(Q, d * d, p) %*% time_poly
+    M = array(M, dim = c(d, d, n))
+  }
+  
+  res_skew = array(0, dim = c(d, d, p))
+  res_x = rep(0, d)
+  
+  for (i in 1:n) {
+    res_x = res_x + c(expm(-M[,,i]) %*% U[i,])
+    
+    temp = expmFrechet(-M[,,i], outer(U[i,], x), expm = FALSE)$Lexpm
+    temp = skewpart(temp)
+    for (j in 1:p) {
+      res_skew[,,j] = res_skew[,,j] + temp * (i / n)^(j - 1)
+    }
+  }
+  
+
+  return (list("grd_skew" = res_skew, "grd_x" = res_x))
+  
+}
+
 
 #' add longitude and latitude grids to rgl sphere object
 #' 
