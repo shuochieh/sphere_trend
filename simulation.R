@@ -20,7 +20,7 @@ sphere_diff_core = function (x, y) {
 #' @param Q an d by d by p array, where each d by d slice is a skew-symmetric matrix
 #'          corresponding to the coefficients associated from the lower degree to the 
 #'          highest degree
-#' @param x starting point
+#' @param x reference point
 #' 
 sphere_trend = function (t, Q, x) {
   if (is.matrix(Q)) {
@@ -269,6 +269,114 @@ skew_gradient = function (U, Q, x, time = NULL) {
   
 }
 
+#' estimate the spherical polynomial model via gradient descent
+#' 
+#' @param y data matrix (n by d)
+#' @param p order of the polynomial (linear = 1)
+#' @param Q0 initialization of the coefficients (d by d by (p + 1), including intercept term)
+#' @param mu0 initialization of the reference point 
+#' @param alpha learning rate
+#' @param save_iter whether to save the gradient descent path (default is FALSE)
+#' 
+spt = function (y, p, Q0, mu0, alpha = 0.5, max.iter = 1000,
+                tol = 1e-5, save_iter = FALSE, verbose = FALSE) {
+  if (is.matrix(Q0)) {
+    Q0 = array(Q0, dim = c(dim(Q0), 1))
+  } else if (length(dim(Q0)) == 2) {
+    Q0 = array(Q0, dim = c(dim(Q0), 1))
+  } else if (length(dim(Q0)) != 3) {
+    stop("spt: Q0 must be either an d by d matrix or an d by d by (p + 1) array")
+  }
+  
+  # initialize
+  if (save_iter) {
+    res_skew = array(0, dim = c(dim(Q0), max.iter))
+    res_skew[,,,1] = Q0
+    res_mu = array(0, dim = c(max.iter, length(mu0)))
+    res_mu[1,] = mu0
+  } else {
+    res_skew = Q0
+    res_mu = mu0
+  }
+  Q = Q0
+  mu = mu0
+  n = dim(y)[1] ; d = dim(y)[2]
+  time = c(1:n) / n
+  U = array(0, dim = c(n, d))
+  
+  
+  for (i in 2:max.iter) {
+    if (verbose) {
+      cat("iteration", i - 1, "\n")
+    }
+    
+    trend = sphere_trend(time, Q, mu)
+    
+    for (j in 1:n) {
+      U[j,] = Log_sphere(y[j,], trend[j,])
+    }
+    grad = skew_gradient(U, Q, mu, time)
+    
+    Q_star = Q - alpha * grad$grd_skew
+    mu_star = Exp_sphere(mu + alpha * grad$grd_x, mu = mu)
+    
+    if (save_iter) {
+      res_skew[,,,i] = Q_star
+      res_mu[i,] = mu_star
+    } else {
+      res_skew = Q_star
+      res_mu = mu_star
+    }
+    
+    if (sqrt(mean((Q_star - Q)^2)) < tol) {
+      if (save_iter) {
+        res_skew = res_skew[,,,1:i]
+        res_mu = res_mu[1:i,]
+        cat("spt: early stopping triggered\n")
+        break
+      } else {
+        Q = Q_star
+        mu = mu_star
+      }
+    }
+    
+  }
+  
+  return (list("Q" = res_skew, "mu" = res_mu))
+}
+
+#' computes the Frechet mean on the sphere
+#' 
+#' @param x (n by q) array of data
+#' 
+mean_on_sphere = function (x, tau = 0.1, tol = 1e-8, max.iter = 1000, verbose = FALSE) {
+  
+  n = nrow(x)
+  mu = x[sample(n, 1),]
+  for (i in 1:max.iter) {
+    grad = colMeans(Log_sphere(x, mu))
+    mu_new = Exp_sphere(mu + tau * grad, mu)
+    
+    temp = c(x %*% mu_new / sqrt(rowSums(x^2)))
+    if (any(temp > 1.01) || any(temp < -1.01)) {
+      stop("mean_on_sphere: something must be wrong")
+    } else {
+      temp = pmin(pmax(temp, -1), 1)
+    }
+    loss = mean(acos(temp))
+    if (i > 1 && (loss_old - loss < tol)) {
+      mu = mu_new
+      break
+    }
+    if (verbose) {
+      cat("mean_on_sphere: iter", i, "; loss", round(loss, 4), "\n")
+    }
+    mu = mu_new
+    loss_old = loss
+  }
+  
+  return (mu)
+}
 
 #' add longitude and latitude grids to rgl sphere object
 #' 
