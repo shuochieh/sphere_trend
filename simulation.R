@@ -214,7 +214,8 @@ noise_inject = function (x, type = "truncate_normal", L = NULL) {
 #' @param x current reference point estimate
 #' @param time specific time points associated with U (default is equally spaced grids)
 #' 
-skew_gradient = function (U, Q, x, time = NULL) {
+skew_gradient = function (U, Q, x, time = NULL,
+                          x_exact = FALSE, dta = NULL) {
   if (is.matrix(Q)) {
     Q = array(Q, dim = c(dim(Q), 1))
   } else if (length(dim(Q)) == 2) {
@@ -240,6 +241,10 @@ skew_gradient = function (U, Q, x, time = NULL) {
       stop("skew_gradient: time length must equal the first dimension of U")
     }
   }
+  
+  if (x_exact) {
+    transformed_data = array(0, dim = c(n, d))
+  }
 
   if (n == 1) {
     time_poly = time^(0:(p - 1))
@@ -255,8 +260,12 @@ skew_gradient = function (U, Q, x, time = NULL) {
   res_x = rep(0, d)
   
   for (i in 1:n) {
-    res_x = res_x + c(expm(-M[,,i]) %*% U[i,])
-    
+    if (!x_exact) {
+      res_x = res_x + c(expm(-M[,,i]) %*% U[i,])
+    } else {
+      transformed_data[i,] = expm(-M[,,i]) %*% dta[i,]
+    }
+
     temp = expmFrechet(-M[,,i], outer(U[i,], x), expm = FALSE)$Lexpm
     temp = skewpart(temp)
     for (j in 1:p) {
@@ -264,6 +273,9 @@ skew_gradient = function (U, Q, x, time = NULL) {
     }
   }
   
+  if (x_exact) {
+    res_x = mean_on_sphere(transformed_data)
+  }
 
   return (list("grd_skew" = res_skew, "grd_x" = res_x))
   
@@ -278,7 +290,7 @@ skew_gradient = function (U, Q, x, time = NULL) {
 #' @param alpha learning rate
 #' @param save_iter whether to save the gradient descent path (default is FALSE)
 #' 
-spt = function (y, p, Q0, mu0, alpha = 0.5, max.iter = 1000,
+spt = function (y, p, Q0, mu0, alpha_Q = 0.5, alpha_mu = 0.01, max.iter = 1000, x_exact = FALSE,
                 tol = 1e-5, save_iter = FALSE, verbose = FALSE) {
   if (is.matrix(Q0)) {
     Q0 = array(Q0, dim = c(dim(Q0), 1))
@@ -307,19 +319,27 @@ spt = function (y, p, Q0, mu0, alpha = 0.5, max.iter = 1000,
   
   for (i in 2:max.iter) {
     if (verbose) {
-      cat("iteration", i - 1, "\n")
+      cat("iteration", i - 1, ": ")
     }
     
     trend = sphere_trend(time, Q, mu)
+    if (verbose) {
+      loss = sqrt(mean(geod_sphere(trend, y)^2))
+      cat(round(loss, 4), "\n")
+    }
     
     for (j in 1:n) {
       U[j,] = Log_sphere(y[j,], trend[j,])
     }
-    grad = skew_gradient(U, Q, mu, time)
+    grad = skew_gradient(U, Q, mu, time, x_exact = x_exact, dta = y)
     
-    Q_star = Q - alpha * grad$grd_skew
-    mu_star = Exp_sphere(mu + alpha * grad$grd_x, mu = mu)
-    
+    Q_star = Q + alpha_Q * grad$grd_skew
+    if (x_exact) {
+      mu_star = grad$grd_x
+    } else {
+      mu_star = Exp_sphere(alpha_mu * grad$grd_x, mu = mu) # gradient update
+    }
+
     if (save_iter) {
       res_skew[,,,i] = Q_star
       res_mu[i,] = mu_star
@@ -335,9 +355,12 @@ spt = function (y, p, Q0, mu0, alpha = 0.5, max.iter = 1000,
         cat("spt: early stopping triggered\n")
         break
       } else {
-        Q = Q_star
-        mu = mu_star
+        cat("spt: early stopping triggered\n")
+        break
       }
+    } else {
+      Q = Q_star
+      mu = mu_star
     }
     
   }
@@ -355,7 +378,7 @@ mean_on_sphere = function (x, tau = 0.1, tol = 1e-8, max.iter = 1000, verbose = 
   mu = x[sample(n, 1),]
   for (i in 1:max.iter) {
     grad = colMeans(Log_sphere(x, mu))
-    mu_new = Exp_sphere(mu + tau * grad, mu)
+    mu_new = Exp_sphere(tau * grad, mu) # Exp_sphere(mu + tau * grad, mu)
     
     temp = c(x %*% mu_new / sqrt(rowSums(x^2)))
     if (any(temp > 1.01) || any(temp < -1.01)) {
@@ -404,7 +427,93 @@ add_sphere_grid = function (n_lat = 9, n_lon = 18, col = "black", alpha = 0.3) {
 }
 
 
+#' computes the geodesic distance between two (array) of points on the spheres
+#' 
+#' If x and y are both arrays, a vector of n distances corresponding to pointwise
+#' geodesic distances is returned.
+#' 
+#' @param x an $(n \times q)$ array of points or a $q$-dimensional vector
+#' @param y an $(n \times q)$ array of points or a $q$-dimensional vector
+geod_sphere = function (x, y) {
+  if (is.vector(x) && is.vector(y)) {
+    
+    if (is_on_sphere(x)) {
+      x = x / norm(x, "2")   # for numerical stability
+    } else {
+      stop("geod_sphere: x not on sphere")
+    }
+    
+    if (is_on_sphere(y)) {
+      y = y / norm(y, "2")   # for numerical stability
+    } else {
+      stop("geod_sphere: y not on sphere")
+    }
+    
+    temp = c(x %*% y)
+    res = acos(temp)
+  } else if (is.matrix(x) && is.vector(y)) {
+    
+    if (prod(apply(x, 1, is_on_sphere)) == 1) {
+      x = x / apply(x, 1, is_on_sphere)
+    } else {
+      stop("geod_sphere: x not on sphere")
+    }
+    
+    if (is_on_sphere(y)) {
+      y = y / norm(y, "2")   # for numerical stability
+    } else {
+      stop("geod_sphere: y not on sphere")
+    }
+    
+    temp = c(x %*% y)
+    res = acos(temp)
+  } else if (is.vector(x) && is.matrix(y)) {
+    
+    if (is_on_sphere(x)) {
+      x = x / norm(x, "2")   # for numerical stability
+    } else {
+      stop("geod_sphere: x not on sphere")
+    }
+    
+    if (prod(apply(y, 1, is_on_sphere)) == 1) {
+      y = y / apply(y, 1, is_on_sphere)
+    } else {
+      stop("geod_sphere: y not on sphere")
+    }
+    
+    temp = c(y %*% x)
+    res = acos(temp)
+  } else if (is.matrix(x) && is.matrix(y)) {
+    
+    if (prod(apply(x, 1, is_on_sphere)) == 1) {
+      x = x / apply(x, 1, is_on_sphere)
+    } else {
+      stop("geod_sphere: x not on sphere")
+    }
+    
+    if (prod(apply(y, 1, is_on_sphere)) == 1) {
+      y = y / apply(y, 1, is_on_sphere)
+    } else {
+      stop("geod_sphere: y not on sphere")
+    }
+    
+    temp = c(diag(x %*% t(y)))
+    res = acos(temp)
+  } else {
+    stop("geod_sphere: x and y must be 2-dim arrays or vectors.")
+  }
+  
+  return (res)
+}
 
+#' check if x is on the sphere (within some tolerance)
+is_on_sphere = function (x, tol = 1e-6) {
+  if (abs(norm(x, "2") - 1) > tol) {
+    return (FALSE)
+  } else {
+    return (TRUE)
+  }
+}
 
 
 
