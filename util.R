@@ -21,8 +21,9 @@ sphere_diff_core = function (x, y) {
 #'          corresponding to the coefficients associated from the lower degree to the 
 #'          highest degree
 #' @param x reference point
+#' @param bias whether a constant bias is added to the polynomial trend
 #' 
-sphere_trend = function (t, Q, x) {
+sphere_trend = function (t, Q, x, bias = FALSE) {
   if (is.matrix(Q)) {
     Q = array(Q, dim = c(dim(Q), 1))
   } else if (length(dim(Q)) == 2) {
@@ -37,13 +38,21 @@ sphere_trend = function (t, Q, x) {
   if (length(t) == 1) {
     r = 1  # length of output
     
-    time_poly = c(t^c(0:(p - 1)))
+    if (bias) {
+      time_poly = c(t^c(0:(p - 1)))
+    } else {
+      time_poly = c(t^c(1:p))
+    }
     M = matrix(Q, n * n, p) %*% time_poly
     M = array(M, dim = c(n, n, 1))
   } else {
     r = length(t)
     
-    time_poly = t(outer(t, 0:(p - 1), `^`))
+    if (bias) {
+      time_poly = t(outer(t, 0:(p - 1), `^`))
+    } else {
+      time_poly = t(outer(t, 1:p, `^`))
+    }
     M = matrix(Q, n * n, p) %*% time_poly
     M = array(M, dim = c(n, n, r))
   }
@@ -213,8 +222,9 @@ noise_inject = function (x, type = "truncate_normal", L = NULL) {
 #' @param Q current polynomial coefficient estimate (d by d by p array or matrix)
 #' @param x current reference point estimate
 #' @param time specific time points associated with U (default is equally spaced grids)
+#' @param bias whether a constant term is added to the polynomial
 #' 
-skew_gradient = function (U, Q, x, time = NULL,
+skew_gradient = function (U, Q, x, time = NULL, bias = FALSE,
                           x_exact = FALSE, dta = NULL) {
   if (is.matrix(Q)) {
     Q = array(Q, dim = c(dim(Q), 1))
@@ -247,11 +257,19 @@ skew_gradient = function (U, Q, x, time = NULL,
   }
 
   if (n == 1) {
-    time_poly = time^(0:(p - 1))
+    if (bias) {
+      time_poly = time^(0:(p - 1))
+    } else {
+      time_poly = time^(1:p)
+    }
     M = matrix(Q, d * d, p) %*% time_poly
     M = array(M, dim = c(d, d, 1))
   } else {
-    time_poly = t(outer(time, 0:(p - 1), `^`))
+    if (bias) {
+      time_poly = t(outer(time, 0:(p - 1), `^`))
+    } else {
+      time_poly = t(outer(time, 1:p, `^`))
+    }
     M = matrix(Q, d * d, p) %*% time_poly
     M = array(M, dim = c(d, d, n))
   }
@@ -269,7 +287,11 @@ skew_gradient = function (U, Q, x, time = NULL,
     temp = expmFrechet(-M[,,i], outer(U[i,], x), expm = FALSE)$Lexpm
     temp = skewpart(temp)
     for (j in 1:p) {
-      res_skew[,,j] = res_skew[,,j] + temp * (i / n)^(j - 1)
+      if (bias) {
+        res_skew[,,j] = res_skew[,,j] + temp * (i / n)^(j - 1)
+      } else {
+        res_skew[,,j] = res_skew[,,j] + temp * (i / n)^(j)
+      }
     }
   }
   
@@ -287,11 +309,15 @@ skew_gradient = function (U, Q, x, time = NULL,
 #' @param p order of the polynomial (linear = 1)
 #' @param Q0 initialization of the coefficients (d by d by (p + 1), including intercept term)
 #' @param mu0 initialization of the reference point 
-#' @param alpha learning rate
+#' @param bias whether a constant term is in the polynomial
+#' @param alpha_Q learning rate for the skew symmetric part
+#' @param alpha_mu learning rate for the reference point
 #' @param save_iter whether to save the gradient descent path (default is FALSE)
 #' 
-spt = function (y, p, Q0, mu0, alpha_Q = 0.5, alpha_mu = 0.01, max.iter = 1000, x_exact = FALSE,
-                tol = 1e-5, save_iter = FALSE, verbose = FALSE) {
+spt = function (y, p, Q0, mu0, bias = FALSE,
+                alpha_Q = 0.5, alpha_mu = 0.01, max.iter = 1000, 
+                x_exact = FALSE, tol = 1e-5, save_iter = FALSE, 
+                verbose = FALSE) {
   if (is.matrix(Q0)) {
     Q0 = array(Q0, dim = c(dim(Q0), 1))
   } else if (length(dim(Q0)) == 2) {
@@ -331,7 +357,7 @@ spt = function (y, p, Q0, mu0, alpha_Q = 0.5, alpha_mu = 0.01, max.iter = 1000, 
     for (j in 1:n) {
       U[j,] = Log_sphere(y[j,], trend[j,])
     }
-    grad = skew_gradient(U, Q, mu, time, x_exact = x_exact, dta = y)
+    grad = skew_gradient(U, Q, mu, time, x_exact = x_exact, dta = y, bias = bias)
     
     Q_star = Q + alpha_Q * grad$grd_skew
     if (x_exact) {
@@ -515,7 +541,9 @@ is_on_sphere = function (x, tol = 1e-6) {
   }
 }
 
-
+mzero = function (n) {
+  return (matrix(0, nrow = n, ncol = n))
+}
 
 
 
@@ -548,282 +576,3 @@ is_on_sphere = function (x, tol = 1e-6) {
 # 
 # add_sphere_grid(alpha = 0.8)
 # close3d()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#' create basis for the set of skew-symmetric matrices in R^d
-#' 
-SK_basis = function (d) {
-  res = array(NA, dim = c(d, d, d * (d - 1) / 2))
-  
-  counter = 1
-  for (i in 1:d) {
-    for (j in 1:d) {
-      if (i == j) {
-        next
-      } else if (i <= j) {
-        next
-      }
-      
-      a = rep(0, d)
-      b = rep(0, d)
-      a[i] = 1
-      b[j] = 1
-      res[,,counter] = outer(a, b) - outer(b, a)
-      counter = counter + 1
-    }
-  }
-  
-  return (res)
-}
-
-check_type = function(x) {
-  if (is.matrix(x)) {
-    return("matrix")
-  } else if (is.atomic(x) && length(x) == 1) {
-    return("scalar")
-  } else if (is.atomic(x) && is.null(dim(x))) {
-    return("vector")
-  } else {
-    return("other")
-  }
-}
-
-SK_to_coordinate <- function(R) {
-  # R: d × d × n
-  
-  if (length(dim(R)) == 2) {
-    R = array(R, dim = c(dim(R), 1))
-  }
-  
-  d = dim(R)[1]
-  n = dim(R)[3]
-  
-  # Basis: d × d × (d * (d - 1) / 2)
-  B = SK_basis(d) 
-  k = dim(B)[3]  
-  
-  # Flatten to (d^2 × n) and (d^2 × k)
-  R_mat = matrix(R, nrow = d^2, ncol = n)
-  B_mat = matrix(B, nrow = d^2, ncol = k)
-  
-  # Result: (n × k)
-  # Crossprod trick: (B' R) but R is d^2 × n, B is d^2 × k
-  res = t(R_mat) %*% B_mat / 2   # k × n
-  
-  return (res)
-}
-
-#' fast linear regression with multivariate Y
-#'
-#' @param X n by k
-#' @param Y n by d
-fastLmMulti = function (X, Y) {
-  d = ncol(Y)
-  k = ncol(X)
-  coefs = matrix(NA, nrow = d, ncol = k)
-  
-  for (j in 1:d) {
-    fit = fastLm(X, Y[,j])
-    coefs[j,] = coef(fit)
-  }
-  
-  return (coefs)
-}
-
-#' computes spherical differences as skew-symmetric matrix
-#' 
-SPD_SK = function (x1, x2) {
-  u1 = x1
-  u2 = x2 - c(t(u1) %*% x2) * u1
-  u2 = u2 / sqrt(sum(u2^2))
-  
-  theta = acos(c(t(x1) %*% x2))
-  
-  return (theta * (outer(u1, u2) - outer(u2, u1)))
-}
-
-#' generates a sequence of spherical differences
-#'
-#' @param type specifies type of the stationary component
-#'             (0: iid; 1:MA(1))
-#' @param d dimension of the ambient Euclidean space
-#' @param B coefficients in the polynomial trends
-#' 
-SPD_gen = function (n, d, B, sigma = 0.1, type = 1) {
-  # generate stationary components
-  stationary_components = array(NA, dim = c(n, d * (d - 1) / 2))
-  if (type == 0) {
-    for (i in 1:n) {
-      stationary_components[i,] = rnorm(d * (d - 1) / 2, sd = sigma)
-    }
-  } else if (type == 1) {
-    for (i in 1:n) {
-      if (i == 1) {
-        stationary_components[i,] = rnorm(d * (d - 1) / 2, sd = sigma)
-      } else {
-        stationary_components[i,] = rnorm(d * (d - 1) / 2, sd = sigma) - stationary_components[i - 1,]
-      }
-    }
-  }
-  
-  B_type = check_type(B)
-  if (B_type == "scalar") {
-    # No trend case
-    
-    if (B != 0) {
-      stop("spherical difference cannot be a nonzero scalar")
-    }
-    res = stationary_components
-    
-  } else if (B_type == "vector") {
-    # linear trend case
-    
-    res = array(0, dim = c(n, d * (d - 1) / 2))
-    
-    for (i in 1:n) {
-      res[i,] = B + stationary_components[i,]
-    }
-    
-  } else if (B_type == "matrix") {
-    # Polynomial trend case
-    p = ncol(B)
-    
-    res = array(0, dim = c(n, d * (d - 1) / 2))
-    
-    for (i in 1:n) {
-      for (j in 1:p) {
-        res[i,] = res[i,] + B[,j] * (i / n)^(j - 1)
-      }
-      res[i,] = res[i,] + stationary_components[i,]
-    }
-  } else {
-    stop ("SPD_gen: B is neither matrix, vector, nor scalar.")
-  }
-  
-  return (list("SPD" = res, "stationary_comp" = stationary_components))
-}
-
-#' generates sphere-valued data with spherical polynomial trend
-#' 
-#' @param x0 initial condition (a point on the sphere)
-#' 
-SPT_gen = function (n, d, B, x0, sigma = 0.1, type = 1) {
-  temp = SPD_gen(n, d, B, sigma, type)
-  SPD = temp$SPD
-  
-  basis = SK_basis(d)
-  
-  if (dim(basis)[3] != ncol(SPD)) {
-    stop("SPT_gen: number of basis != SPD dimension")
-  }
-  
-  x = array(NA, dim = c(n, d))
-  
-  # turn SPD coordinates into skew-symmetric matrices
-  basis_flat = matrix(basis, nrow = d * d, ncol = d * (d - 1) / 2)
-  Q_flat = basis_flat %*% t(SPD)
-  Q = array(Q_flat, dim = c(d, d, n))
-  
-  # skew-symmetric matrices --> rotation matrices
-  R = array(NA, dim = c(d, d, n))
-  for (i in 1:n) {
-    R[,,i] = expm(Q[,,i])
-  }
-  
-  for (i in 1:n) {
-    if (i == 1) {
-      x[i,] = x0 # R[,,1] %*% x0
-    } else {
-      x[i,] = R[,,i] %*% x[i - 1,]
-    }
-  }
-  
-  return (list("x" = x, "basis" = basis, "SPD" = SPD, "R" = R, "Q" = Q, "x0" = x0))
-}
-
-#' estimates the SPT model
-#' 
-#' @param order order of the polynomial (must >= 1). (1: linear trend;...)
-#' @param x n by d data
-#' 
-SPT_estimate = function (x, order) {
-  n = nrow(x)
-  d = ncol(x)
-
-  SPD_in_SK = array(NA, dim = c(d, d, n - 1))
-  for (i in 1:(n - 1)) {
-    SPD_in_SK[,,i] = SPD_SK(x[i + 1,], x[i,])
-  }
-  
-  SPD_in_basis = SK_to_coordinate(SPD_in_SK)
-  
-  X = array(NA, dim = c(n - 1, order))
-  for (i in 1:order) {
-    X[,i] = (c(2:n) / n)^(i - 1)
-  }
-  
-  B_hat = fastLmMulti(X, SPD_in_basis)
-  
-  return (B_hat)
-}
-
-
-
-
-
-
-############## Example
-set.seed(1)
-close3d()
-
-B = cbind(rnorm(3, sd = 0.05), rnorm(3, sd = 0.05))
-dta = SPT_gen(100, 3, B[,1], x0 = c(0,0,1), 
-              sigma = 0.000)
-
-B_hat = SPT_estimate(dta$x, 1)
-
-
-spheres3d(0, 0, 0, radius = 1, color = "lightblue", alpha = 0.3)
-
-for (i in 1:1) {
-  dta = SPT_gen(100, 3, B[,1], x0 = c(0,0,1), 
-                sigma = 0.005)
-  x = dta$x
-  lines3d(x, col = "steelblue", lwd = 1.5)
-  points3d(x, col = "lightblue", size = 5)
-}
-
-lines3d(x, col = "red", lwd = 2)
-points3d(x, col = "red", size = 5)
-
-dta = SPT_gen(100, 3, B, x0 = c(0,0,1), 
-              sigma = 0.02)
-y = dta$x
-lines3d(y, col = "blue", lwd = 2)
-points3d(y, col = "blue", size = 5)
-
-axis_length <- 1.5  
-segments3d(rbind(c(-axis_length, 0, 0), c(axis_length, 0, 0)), col = "black",   lwd = 3) # X-axis
-segments3d(rbind(c(0, -axis_length, 0), c(0, axis_length, 0)), col = "black", lwd = 3) # Y-axis
-segments3d(rbind(c(0, 0, -axis_length), c(0, 0, axis_length)), col = "black",  lwd = 3) # Z-axis
-
-# rgl.postscript("sphere_trajectory.pdf", fmt = "pdf")
-
-
-
-
-
-
