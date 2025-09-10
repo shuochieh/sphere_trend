@@ -342,6 +342,7 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
   time = c(1:n) / n
   U = array(0, dim = c(n, d))
   
+  loss = rep(NA, max.iter)
   
   for (i in 2:max.iter) {
     if (verbose) {
@@ -350,8 +351,9 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
     
     trend = sphere_trend(time, Q, mu)
     if (verbose) {
-      loss = sqrt(mean(geod_sphere(trend, y)^2))
-      cat(round(loss, 4), "\n")
+      temp = sqrt(mean(geod_sphere(trend, y)^2))
+      loss[i - 1] = temp
+      cat(round(temp, 4), "\n")
     }
     
     for (j in 1:n) {
@@ -378,6 +380,7 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
       if (save_iter) {
         res_skew = res_skew[,,,1:i]
         res_mu = res_mu[1:i,]
+        loss = loss[1:(i - 1)]
         cat("spt: early stopping triggered\n")
         break
       } else {
@@ -391,7 +394,7 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
     
   }
   
-  return (list("Q" = res_skew, "mu" = res_mu))
+  return (list("Q" = res_skew, "mu" = res_mu, "loss" = loss))
 }
 
 #' computes the Frechet mean on the sphere
