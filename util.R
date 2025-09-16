@@ -1,7 +1,10 @@
 library(expm)
 library(rgl)
 library(RcppEigen)
+library(deSolve)
 
+#' computes spherical difference of x - y
+#' 
 sphere_diff_core = function (x, y) {
   u1 = x
   u2 = y - c(t(c(y) %*% c(u1))) * u1
@@ -66,6 +69,62 @@ sphere_trend = function (t, Q, x, bias = FALSE) {
 
   return (t(res))
 }
+
+#' evaluates the derivative of the spherical polynomial trend at time t
+#' (Only internally used)
+#' 
+#' @param t a time index 
+#' @param Q an d by d by p array, where each d by d slice is a skew-symmetric matrix
+#'          corresponding to the coefficients associated from the lower degree to the 
+#'          highest degree
+#' @param x reference point
+#' @param bias whether a constant bias is added to the polynomial trend
+#' 
+diff_sphere_trend = function (t, Q, x, bias = FALSE) {
+  if (is.matrix(Q)) {
+    Q = array(Q, dim = c(dim(Q), 1))
+    if (bias) {
+      return (rep(0, length(x)))
+    }
+  } else if (length(dim(Q)) == 2) {
+    Q = array(Q, dim = c(dim(Q), 1))
+    if (bias) {
+      return (rep(0, length(x)))
+    }
+  } else if (length(dim(Q)) != 3) {
+    stop("Q must be either an d by d matrix or an d by d by p array")
+  }
+  if (bias) {
+    Q_nobias = Q[,,-1]
+  } else {
+    Q_nobias = Q
+  }
+
+  n = dim(Q_nobias)[1]
+  p = dim(Q_nobias)[3]
+  
+  # the derivative of the polynomial part
+  time_poly = c(1:p) * t^(c(0:(p - 1)))
+  E = matrix(Q_nobias, n * n, p) %*% time_poly
+  E = array(E, dim = c(n, n))
+  
+  # compute the polynomial part
+  p = dim(Q)[3]
+  if (bias) {
+    time_poly = c(t^c(0:(p - 1)))
+  } else {
+    time_poly = c(t^c(1:p))
+  }
+  M = matrix(Q, n * n, p) %*% time_poly
+  M = array(M, dim = c(n, n))
+  
+  # compute the derivative of the trend
+  res = expmFrechet(M, E)$Lexpm 
+  res = res %*% x
+
+  return (c(res))
+}
+
 
 #' computes the exponential map of the sphere
 #' 
@@ -184,36 +243,94 @@ trunc_normal_tangent = function (n, L, mu) {
   return (res)
 }
 
-#' adds noise to sphere data
+#' turns vector into skew-symmetric matrix
 #' 
-#' @param x a d-dimensional vector or n by d array of data
-#' @param type noise distribution ("truncate_normal")
-#' @param L norm of the truncated normal
-#' 
-noise_inject = function (x, type = "truncate_normal", L = NULL) {
-  if (type == "truncate_normal") {
-    if (is.null(L)) {
-      stop("noise_inject: for truncate_normal type, L must be supplied")
-    }
-    if (is.vector(x)) {
-      d = length(x)
-      
-      res = Exp_sphere(trunc_normal_tangent(1, L = L, mu = x) , mu = x)
-    } else if (is.matrix(x)) {
-      n = nrow(x)
-      d = ncol(x)
-      
-      res = matrix(0, nrow = n, ncol = d)
-      
-      for (i in 1:n) {
-        res[i,] = Exp_sphere(c(trunc_normal_tangent(1, L = L, mu = x[i,])) , mu = x[i,])
-      }
-    }
-  } else {
-    stop("noise_inject: noise type not supported")
-  }
+vec_2_skew = function (v) {
+  p = length(v)
+  d = (1 + sqrt(1 + 8 * p)) / 2
+  
+  res = matrix(0, ncol = d, nrow = d)
+  res[upper.tri(res)] = v
+  res = res - t(res)
   
   return (res)
+}
+
+#' helper function for parallel transport on the sphere
+#' 
+f_rhs = function (t, V, params) {
+  Q = params$Q
+  x = params$x
+  bias = params$bias
+  gamma = sphere_trend(t, Q, x, bias = bias)
+  gamma_dot = diff_sphere_trend(t, Q, x, bias = bias)
+  
+  res = -c(t(c(V)) %*% c(gamma_dot)) * c(gamma)
+  
+  return (list(res))
+}
+
+#' parallel transport on the sphere
+#' 
+#' @param parms list(Q = Q, x = x, bias = bias)
+#' 
+pt_sphere = function (t0, t1, V0, parms) {
+  times = seq(from = t0, to = t1, length.out = 50)
+  para_V = ode(y = V0, times = times, func = f_rhs, parms = parms)
+  
+  return (para_V)
+}
+
+#' noisy trend data
+#' 
+#' @param t a time index or a grid of time index
+#' @param Q a d by d by p array
+#' @param x reference point
+#' @param alpha AR coefficient
+#' @param s standard deviation in the spherical AR model
+#' @param bias 
+#' 
+noisy_trend = function (t, Q, x, alpha = 0.8, s = 0.1, bias = FALSE) {
+  if (is.matrix(Q)) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) == 2) {
+    Q = array(Q, dim = c(dim(Q), 1))
+  } else if (length(dim(Q)) != 3) {
+    stop("Q must be either a d by d matrix or a d by d by p array")
+  }
+  
+  d = length(x)
+  n = length(t)
+  
+  V0 = rnorm(d, sd = s)
+  V0 = V0 - c((t(x) %*% V0)) * x
+  
+  V = matrix(NA, nrow = n, ncol = d)
+  res = matrix(0, nrow = n, ncol = d)
+  trend = matrix(0, nrow = n, ncol = d)
+
+  for (j in 1:n) {
+    # transport V0 from time 0 to time t
+    time = t[j]
+    if (j == 1) {
+      last_time = 0
+    } else {
+      last_time = t[j - 1]
+    }
+    para_V = pt_sphere(last_time, time, V0, list(Q = Q, x = x, bias = bias))
+    para_V = tail(para_V, 1)[-1]
+    trend_value = c(sphere_trend(time, Q, x, bias))
+    
+    V0 = rnorm(d, sd = s)
+    V0 = V0 - c(t(trend_value) %*% V0) * trend_value
+    V0 = alpha * para_V + V0
+    
+    V[j,] = V0
+    res[j,] = Exp_sphere(V0, trend_value)
+    trend[j,] = trend_value
+  }
+  
+  return (list("dta" = res, "V" = V, "trend" = trend))
 }
 
 #' computes the gradient with respect to the skew-symmetric coefficients and the reference point
@@ -350,9 +467,9 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
     }
     
     trend = sphere_trend(time, Q, mu)
+    temp = sqrt(mean(geod_sphere(trend, y)^2))
+    loss[i - 1] = temp
     if (verbose) {
-      temp = sqrt(mean(geod_sphere(trend, y)^2))
-      loss[i - 1] = temp
       cat(round(temp, 4), "\n")
     }
     
@@ -579,3 +696,70 @@ mzero = function (n) {
 # 
 # add_sphere_grid(alpha = 0.8)
 # close3d()
+
+
+### Defunct codes
+#' adds noise to sphere data
+#' 
+#' @param x a d-dimensional vector or n by d array of data
+#' @param type noise distribution ("truncate_normal", "dependent")
+#' @param L norm of the truncated normal
+#' @param alpha AR coefficient if type = "dependent"
+#' @param s standard deviation in the spherical AR model if type = "dependent"
+#' 
+# noise_inject = function (x, type = "truncate_normal", L = NULL, alpha = NULL,
+#                          s = NULL) {
+#   if (type == "truncate_normal") {
+#     if (is.null(L)) {
+#       stop("noise_inject: for truncate_normal type, L must be supplied")
+#     }
+#     if (is.vector(x)) {
+#       res = Exp_sphere(c(trunc_normal_tangent(1, L = L, mu = x)) , mu = x)
+#     } else if (is.matrix(x)) {
+#       n = nrow(x)
+#       d = ncol(x)
+#       
+#       res = matrix(0, nrow = n, ncol = d)
+#       
+#       for (i in 1:n) {
+#         res[i,] = Exp_sphere(c(trunc_normal_tangent(1, L = L, mu = x[i,])) , mu = x[i,])
+#       }
+#     } else {
+#       stop("noise_inject: input x must either vector or matrix")
+#     }
+#   } else if (type == "dependent") {
+#     if (is.null(alpha)) {
+#       stop("noise_inject: for dependent type, alpha must be supplied")
+#     }
+#     if (is.null(s)) {
+#       stop("noise_inject: for dependent type, s must be supplied")
+#     }
+#     if (is.vector(x)) {
+#       res = Exp_sphere(trunc_normal_tangent(1, L = s, mu = x), mu = x)
+#     } else if (is.matrix(x)) {
+#       n = nrow(x)
+#       d = ncol(x)
+#       
+#       res = matrix(0, nrow = n, ncol = d)
+#       
+#       res[1,] = Exp_sphere(c(trunc_normal_tangent(1, L = s, mu = x[1,])), mu = x[1,])
+#       
+#       for (j in 2:n) {
+#         v = Log_sphere(res[1,], )
+#       }
+#       
+#       return (list("dta" = res, "Q" = Q_save))
+#       
+#     } else {
+#       stop("noise_inject: input x must either vector or matrix")
+#     }
+#   } else {
+#     stop("noise_inject: noise type not supported")
+#   }
+#   
+#   return (res)
+# }
+
+
+
+
