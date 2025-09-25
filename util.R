@@ -482,7 +482,11 @@ spt = function (y, p, Q0, mu0, bias = FALSE,
     if (x_exact) {
       mu_star = grad$grd_x
     } else {
-      mu_star = Exp_sphere(alpha_mu * grad$grd_x, mu = mu) # gradient update
+      if (j %% 50 == 0 && j > 49) {
+        mu_star = Exp_sphere(alpha_mu * grad$grd_x, mu = mu) # gradient update
+      } else {
+        mu_star = mu
+      }
     }
 
     if (save_iter) {

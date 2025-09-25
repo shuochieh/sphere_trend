@@ -5,7 +5,7 @@ k = 100
 c = 1   
 
 Q1 = 1 * matrix(c(0, -1, 0, 1, 0, 0, 0, 0, 0), ncol = 3)
-trend_model = noisy_trend(c(1:k) / k, Q1, x, s = 0.01, alpha = 0.0)
+trend_model = noisy_trend(c(1:k) / k, Q1, x, s = 0.01, alpha = 0.8)
 dta = trend_model$dta
 trend = trend_model$trend
 
