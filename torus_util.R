@@ -357,7 +357,33 @@ fit_trend = function (B, grid, mu, type = "poly") {
   return (res)
 }
 
-
+#' compute loss
+#' 
+#' @param X (d by 2 by n) or (2 by n)
+#' @param Y (d by 2 by n) or (2 by n)
+#' 
+loss_compute = function (X, Y) {
+  res = 0
+  if (length(dim(X)) == 3) {
+    d = dim(X)[1]
+    n = dim(X)[3]
+    for (j in 1:d) {
+      for (i in 1:n) {
+        res = res + geod_sphere(c(X[j,,i]), c(Y[j,,i]))^2
+      }
+    }
+  } 
+  if (length(dim(X)) == 2) {
+    n = dim(X)[2]
+    for (i in 1:n) {
+      res = res + geod_sphere(c(X[,i]), c(Y[,i]))^2
+    }
+  }
+  
+  res = res / n
+  
+  return (res)
+}
 
 
 
