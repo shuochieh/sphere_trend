@@ -1,3 +1,4 @@
+library(abind)
 source("./sphere_generic_util.R")
 
 skew_2_rotation = function (a) {
@@ -82,7 +83,7 @@ dta_gen = function (n, B, type = "poly", grid, mu0 = NULL,
       trend[,i] = c(skew_2_rotation(temp[i]) %*% mu0)
       
       if (sigma > 0) {
-        res[j,,i] = circle_perturb(trend[j,,i], rnorm(1, sd = sigma))
+        res[,i] = circle_perturb(trend[,i], rnorm(1, sd = sigma))
       }
       
     }
@@ -284,7 +285,7 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
           grad_mu[j,] = grad_mu[j,] - 2 * Log_sphere(c(rot_x), c(mu[j,])) / n
         }
         if (d == 1) {
-          rot_x = R %*% X[,i]
+          rot_x = c(R %*% X[,i])
           loss = loss + geod_sphere(rot_x, mu)^2
           
           grad_mu = grad_mu - 2 * Log_sphere(rot_x, mu) / n
@@ -311,6 +312,39 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
   return (list("B" = B, "mu" = mu, "loss" = loss_history,
                "B_history" = B_history,
                "mu_history" = mu_history))  
+}
+
+#' wrapper for diminishing step size
+#' apply decay1 and decay2 to alpha1 and alpha2 respectively every 50 iterations
+#' 
+prox_model_decay = function(X, grid, type = "poly", B_init = NULL, mu_init = NULL,
+                            alpha1 = 0.1, alpha2 = 0.01, decay1 = 1, decay2 = 1,
+                            lambda = 0, max_iter = 500,
+                            p = 1, q = 1) {
+  
+  outer_iter = max_iter %/% 50
+  B_history = NULL
+  mu_history = NULL
+  loss = NULL
+  
+  for (z in 1:outer_iter) {
+    model = prox_model(X = X, grid = grid, type = type, B_init = B_init, mu_init = mu_init,
+                       alpha1 = alpha1, alpha2 = alpha2, lambda = lambda, max_iter = 50,
+                       p = p , q = q)
+    B_init = model$B
+    mu_init = model$mu
+    
+    B_history = abind(B_history, model$B_history, along = 3)
+    mu_history = abind(mu_history, model$mu_history, along = 3)
+    loss = c(loss, model$loss)
+    
+    alpha1 = alpha1 * decay1
+    alpha2 = alpha2 * decay2
+    
+  }
+  
+  return (list("B" = model$B, "mu" = model$mu, "loss" = loss, "B_history" = B_history,
+               "mu_history" = mu_history))
 }
 
 fit_trend = function (B, grid, mu, type = "poly") {
