@@ -195,7 +195,7 @@ prox_grad_core = function (B, alpha, mu, X, time_basis, lambda) {
 #'
 prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
                        alpha1 = 0.1, alpha2 = 0.01, lambda = 0, max_iter = 500,
-                       p = 1, q = 1) {
+                       p = 1, q = 1, verbose = TRUE) {
   
   # construct time basis functions and initializations
   if (length(dim(X)) == 3) {
@@ -305,8 +305,10 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
       
     }
     
-    loss_history[z] = loss / n
-    cat("iteration", z, ": loss", round(loss / n, 4), "\n")
+    loss_history[z] = loss / n + lambda * sum(svd(B)$d)
+    if (verbose) {
+      cat("iteration", z, ": loss", round(loss / n, 4), "\n")
+    }
   }
     
   return (list("B" = B, "mu" = mu, "loss" = loss_history,
@@ -320,7 +322,7 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
 prox_model_decay = function(X, grid, type = "poly", B_init = NULL, mu_init = NULL,
                             alpha1 = 0.1, alpha2 = 0.01, decay1 = 1, decay2 = 1,
                             lambda = 0, max_iter = 500,
-                            p = 1, q = 1) {
+                            p = 1, q = 1, verbose = TRUE) {
   
   outer_iter = max_iter %/% 50
   B_history = NULL
@@ -330,7 +332,7 @@ prox_model_decay = function(X, grid, type = "poly", B_init = NULL, mu_init = NUL
   for (z in 1:outer_iter) {
     model = prox_model(X = X, grid = grid, type = type, B_init = B_init, mu_init = mu_init,
                        alpha1 = alpha1, alpha2 = alpha2, lambda = lambda, max_iter = 50,
-                       p = p , q = q)
+                       p = p , q = q, verbose = verbose)
     B_init = model$B
     mu_init = model$mu
     
@@ -341,6 +343,47 @@ prox_model_decay = function(X, grid, type = "poly", B_init = NULL, mu_init = NUL
     alpha1 = alpha1 * decay1
     alpha2 = alpha2 * decay2
     
+  }
+  
+  return (list("B" = model$B, "mu" = model$mu, "loss" = loss, "B_history" = B_history,
+               "mu_history" = mu_history))
+}
+
+prox_model_alternate = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
+                                 alpha1 = 0.1, alpha2 = 0.01, 
+                                 max_iter = 10, 
+                                 max_iter_B = 100,
+                                 max_iter_mu = 10,
+                                 lambda = 0, p = 1, q = 1,
+                                 verbose = TRUE) {
+  B_history = NULL
+  mu_history = NULL
+  loss = NULL
+  
+  for (zz in 1:max_iter) {
+    model = prox_model(X = X, grid = grid, type = type, B_init = B_init, mu_init = mu_init,
+                       alpha1 = alpha1, alpha2 = 0, lambda = lambda, 
+                       max_iter = max_iter_B,
+                       p = p, q = q,
+                       verbose = verbose)
+    B_init = model$B
+    mu_init = model$mu
+    
+    B_history = abind(B_history, model$B_history, along = 3)
+    mu_history = abind(mu_history, model$mu_history, along = 3)
+    loss = c(loss, model$loss)
+    
+    model = prox_model(X = X, grid = grid, type = type, B_init = B_init, mu_init = mu_init,
+                       alpha1 = 0, alpha2 = alpha2, lambda = lambda, 
+                       max_iter = max_iter_mu,
+                       p = p, q = q,
+                       verbose = verbose)
+    B_init = model$B
+    mu_init = model$mu
+    
+    B_history = abind(B_history, model$B_history, along = 3)
+    mu_history = abind(mu_history, model$mu_history, along = 3)
+    loss = c(loss, model$loss)
   }
   
   return (list("B" = model$B, "mu" = model$mu, "loss" = loss, "B_history" = B_history,
