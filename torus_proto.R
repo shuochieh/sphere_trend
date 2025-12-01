@@ -20,24 +20,24 @@ low_rank_gen = function (m, n, r, s = 1) {
 set.seed(1)
 n = 30
 d = 25
+q_true = 3
 q = 3
 grid = c(1:n) 
-lambda = 0.5
 
-B = 8 * low_rank_gen(d, 2 * q, 1)
+B = 8 * low_rank_gen(d, 2 * q_true, 1)
 
-dta = dta_gen(n, B, "season", grid, sigma = 0.75, q = q)
+dta = dta_gen(n, B, "season", grid, sigma = 0.75, q = q_true)
 
 ### Option 1: Infeasible perturbed truth
 # B_init = B + 1.0 * matrix(rnorm(d * 2 * q), nrow = d, ncol = 2 * q)
 ################
 
 ### Option 2: Initialization warm-up
-model_unc = prox_model_alternate(dta$dta, grid, "season", 
-                                 alpha1 = 1e-2, alpha2 = 1e-3,
+model_unc = prox_model_alternate(dta$dta, grid, "season",
+                                 alpha1 = 1e-2, alpha2 = 0,
                                  max_iter = 20,
-                                 max_iter_B = 50,
-                                 max_iter_mu = 20,
+                                 max_iter_B = 100,
+                                 max_iter_mu = 1,
                                  mu_init = NULL,
                                  B_init = NULL,
                                  q = 2)
@@ -65,26 +65,27 @@ fitted_unc = fit_trend(model_unc$B, grid, model_unc$mu, "season")
 
 
 
-lambda_grid = seq(from = 0.5, to = 1.5, length.out = 5)
-temp = rep(NA, 5)
-for (zz in 1:5) {
+lambda_grid = seq(from = 0.1, to = 1.0, length.out = 5)
+temp = rep(NA, length(lambda_grid))
+for (zz in 1:length(lambda_grid)) {
   model_c = prox_model_alternate(dta$dta, grid, "season",
                                  alpha1 = 1e-2, alpha2 = 1e-3,
                                  lambda = lambda_grid[zz],
-                                 max_iter = 20,
+                                 max_iter = 10,
                                  max_iter_B = 50,
                                  max_iter_mu = 20,
                                  mu_init = NULL,
                                  B_init = model_unc$B,
                                  q = q,
                                  verbose = FALSE)
+  fitted_c = fit_trend(model_c$B, grid, model_c$mu, "season")
   temp[zz] = sqrt(loss_compute(dta$trend, fitted_c) / d)
   cat("lambda search...", zz, "\n")
 }
 lambda_opt = lambda_grid[which.min(temp)]
 
 model_c = prox_model_alternate(dta$dta, grid, "season",
-                               alpha1 = 1e-2, alpha2 = 1e-3,
+                               alpha1 = 1e-3, alpha2 = 1e-3,
                                lambda = lambda_opt,
                                max_iter = 20,
                                max_iter_B = 50,
@@ -115,7 +116,7 @@ for (j in 1:d) {
   plot(circ_2_angle(t(dta$dta[j,,])), ylab = "", xlab = "", ylim = c(-pi, pi), pch = 19,
        col = "gray70",
        main = paste("Series", j))
-  lines(circ_2_angle(t(dta$trend[j,,])), col = "lightblue", lwd = 2)
+  lines(circ_2_angle(t(dta$trend[j,,])), col = "steelblue", lwd = 2)
   lines(circ_2_angle(t(fitted_unc[j,,])), col = "salmon2", lty = 2, lwd = 2.5)
   lines(circ_2_angle(t(fitted_c[j,,])), col = "darkolivegreen4", lty = 2, lwd = 2.5)
   lines(nw_gaussian_circ(grid/n, grid/n, circ_2_angle(t(dta$dta[j,,])), h = h_opt), 
@@ -149,9 +150,9 @@ for (iter in 1:1400) {
   fitted_c = fit_trend(B_hat, grid, mu_hat, "season")
   for (j in 1:d) {
     training_err_c[j,iter] = sqrt(loss_compute(dta$dta[j,,], fitted_c[j,,]) / d)
-    obj_val[iter] = obj_val[iter] + training_err_c[j,iter]^2 
+    obj_val[iter] = obj_val[iter]^2 + training_err_c[j,iter]^2 
   }
-  obj_val[iter] = obj_val[iter] + lambda * sum(svd(B_hat)$d)
+  obj_val[iter] = obj_val[iter] + lambda_opt * sum(svd(B_hat)$d)
   
   cat("    iter", iter, "\n")
 }

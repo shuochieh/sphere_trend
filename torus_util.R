@@ -195,7 +195,9 @@ prox_grad_core = function (B, alpha, mu, X, time_basis, lambda) {
 #'
 prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
                        alpha1 = 0.1, alpha2 = 0.01, lambda = 0, max_iter = 500,
-                       p = 1, q = 1, verbose = TRUE) {
+                       p = 1, q = 1, 
+                       verbose = TRUE,
+                       iter_start = 0) {
   
   # construct time basis functions and initializations
   if (length(dim(X)) == 3) {
@@ -256,7 +258,6 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
   loss_history = rep(NA, max_iter)
   
   for (z in 1:max_iter) {
-    loss = 0
     if (d > 1) {
       grad_mu = array(0, dim = c(d, 2))
     } else if (d == 1) {
@@ -267,7 +268,7 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
     B = prox_grad_core(B, alpha1, mu, X, time_basis, lambda)
     B_history[,,z] = B
     
-    # update mu (compute Riemannian gradients)
+    # update mu 
     for (j in 1:d) {
       if (d > 1) {
         temp = c(time_basis %*% B[j,])
@@ -275,24 +276,20 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
         temp = c(time_basis %*% B)
       }
       
+      # (compute Riemannian gradients)
       for (i in 1:n) {
         R = skew_2_rotation(-temp[i])
         if (d > 1) {
           rot_x = R %*% X[j,,i]
-          
-          loss = loss + geod_sphere(c(rot_x), c(mu[j,]))^2
-          
           grad_mu[j,] = grad_mu[j,] - 2 * Log_sphere(c(rot_x), c(mu[j,])) / n
         }
         if (d == 1) {
           rot_x = c(R %*% X[,i])
-          loss = loss + geod_sphere(rot_x, mu)^2
-          
           grad_mu = grad_mu - 2 * Log_sphere(rot_x, mu) / n
         }
       }
       
-      # update mu (Exponential map)
+      # (Exponential map)
       if (d > 1) {
         for (j in 1:d) {
           mu[j,] = Exp_sphere(-alpha2 * grad_mu[j,], mu[j,])
@@ -302,13 +299,26 @@ prox_model = function (X, grid, type = "poly", B_init = NULL, mu_init = NULL,
         mu = Exp_sphere(-alpha2 * grad_mu, mu)
         mu_history[1,,z] = mu
       }
-      
     }
     
-    loss_history[z] = loss / n + lambda * sum(svd(B)$d)
-    if (verbose) {
-      cat("iteration", z, ": loss", round(loss / n, 4), "\n")
+    if ((z + iter_start) %% 10 == 0) {
+      loss = 0
+      fitted_c = fit_trend(B, grid, mu, type)
+      if (d > 1) {
+        for (j in 1:d) {
+          loss = loss + loss_compute(X[j,,], fitted_c[j,,]) 
+        }
+        loss = loss + lambda * sum(svd(B)$d)
+      } 
+      
+      if (d == 1) {
+        loss = loss_compute(X, fitted_c) + lambda * sum(svd(B)$d)
+      }
+      if (verbose) {
+        cat("iteration", z, ": loss", round(loss, 4), "\n")
+      }
     }
+    
   }
     
   return (list("B" = B, "mu" = mu, "loss" = loss_history,
@@ -365,7 +375,8 @@ prox_model_alternate = function (X, grid, type = "poly", B_init = NULL, mu_init 
                        alpha1 = alpha1, alpha2 = 0, lambda = lambda, 
                        max_iter = max_iter_B,
                        p = p, q = q,
-                       verbose = verbose)
+                       verbose = verbose,
+                       iter_start = (zz - 1) * (max_iter_B + max_iter_mu))
     B_init = model$B
     mu_init = model$mu
     
