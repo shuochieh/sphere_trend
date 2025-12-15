@@ -31,7 +31,7 @@ geod_sphere = function (x, y) {
       stop("geod_sphere: y not on sphere")
     }
     
-    temp = c(x %*% y)
+    temp = round(c(x %*% y), 10) # resolve numerical issue (not ideal, please revisit in the future)
     res = acos(temp)
   } else if (is.matrix(x) && is.vector(y)) {
     

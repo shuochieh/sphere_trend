@@ -15,13 +15,108 @@ low_rank_gen = function (m, n, r, s = 1) {
   }
 }
 
+# True mu initialization
+n_exper = 100            # number of Monte Carlo experiments
+d = 25
+q_true = 3
+q = 3
+
+err_FW = array(NA, dim = c(d, n_exper, 9))
+err_kernel = array(NA, dim = c(d, n_exper, 9))
+
+err_FW_mu = array(NA, dim = c(d, n_exper, 9))
+
+ns = c(30, 60, 120)
+sigma1s = c(2, 6, 18)
+param_config = data.frame(
+  n = rep(ns, 1, each = 3),
+  sigma1 = rep(sigma1s, 3)
+)
+
+for (config in 1:9) {
+  n = param_config[config, "n"]
+  sigma1 = param_config[config, "sigma1"]
+  grid = c(1:n)
+  
+  for (zz in 1:n_exper) {
+    set.seed(zz + (config - 1) * n_exper)
+    
+    B = sigma1 * runif(d, -1, 1) %o% (1 / sqrt(1.5))^(c(1:(2 * q_true)))
+    dta = dta_gen(n, B, "season", grid, sigma = 0.75, q = q_true)
+    
+    model_unc = prox_model_alternate(dta$dta, grid, "season", 
+                                     alpha1 = 1e-2, alpha2 = 0,
+                                     max_iter = 1,
+                                     max_iter_B = 1500,
+                                     max_iter_mu = 1,
+                                     mu_init = dta$mu,
+                                     B_init = NULL,
+                                     q = q,
+                                     verbose = FALSE)
+    fitted_unc = fit_trend(model_unc$B, grid, model_unc$mu, "season")
+    
+    model_c = prox_model_alternate(dta$dta, grid, "season",
+                                   alpha1 = 1e-3, alpha2 = 0,
+                                   lambda = 1.0,
+                                   max_iter = 1,
+                                   max_iter_B = 1500,
+                                   max_iter_mu = 1,
+                                   mu_init = dta$mu,
+                                   B_init = model_unc$B,
+                                   q = q,
+                                   verbose = FALSE)
+    fitted_c = fit_trend(model_c$B, grid, model_c$mu, "season")
+    
+    h_grid = seq(from = 0.01, to = 0.1, length.out = 10)
+    oracle_loss = rep(0, 10)
+    for (z in 1:10) {
+      h = h_grid[z]
+      temp = array(NA, dim = c(d, 2, n))
+      for (j in 1:d) {
+        temp[j,1,] = cos(nw_gaussian_circ(grid/n, grid/n, circ_2_angle(t(dta$dta[j,,])), h = h))
+        temp[j,2,] = sin(nw_gaussian_circ(grid/n, grid/n, circ_2_angle(t(dta$dta[j,,])), h = h))
+      }
+      oracle_loss[z] = sqrt(loss_compute(dta$trend, temp) / d)
+    }
+    h_opt = h_grid[which.min(oracle_loss)]
+    
+    temp = array(NA, dim = c(d, 2, n))
+    for (j in 1:d) {
+      temp[j,1,] = cos(nw_gaussian_circ(grid/n, grid/n, circ_2_angle(t(dta$dta[j,,])), h = h_opt))
+      temp[j,2,] = sin(nw_gaussian_circ(grid/n, grid/n, circ_2_angle(t(dta$dta[j,,])), h = h_opt))
+    }
+    
+    for (j in 1:d) {
+      err_unc[j, zz, config] = loss_compute(dta$trend[j,,], fitted_unc[j,,])
+      err_c[j, zz, config] = loss_compute(dta$trend[j,,], fitted_c[j,,])
+      err_kernel[j, zz, config] = loss_compute(dta$trend[j,,], temp[j,,])
+      
+      err_unc_mu[j, zz, config] = geod_sphere(dta$mu[j,], model_unc$mu[j,])
+      err_c_mu[j, zz, config] = geod_sphere(dta$mu[j,], model_c$mu[j,])
+    }
+
+    
+    cat("Configuration", config, "iteration", zz, "\n")
+  }
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Case 1 
 
 set.seed(1)
 n = 30
-d = 25
-q_true = 3
-q = 3
 grid = c(1:n) 
 
 B = 8 * low_rank_gen(d, 2 * q_true, 1)
